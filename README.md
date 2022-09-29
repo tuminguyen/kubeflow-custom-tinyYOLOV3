@@ -6,18 +6,18 @@ Kubeflow training a tiny YoloV3 model with custom dataset. In this example code,
 - kfp library. *Install by:*``` pip install kfp```
 
 ## Custom parameters
-There are 11 parameters in total that need to be configured before starting a run. Some of them have no default values, some have. However, we still can change it if needed.
+There are 12 parameters in total that need to be configured before starting a run. Some of them have no default values, some have. However, we still can change it if needed.
 
 1. with_gpu | int
     - *meaning:* train with GPUs or not
     - *values:* 0 or 1
     - *default:* 0 (no GPU)
 2. print_training | int
-    - *meaning:* print the training output or not (iter, loss, avg loss, etc.,).
+    - *meaning:* print the training output or not (iter, loss, avg loss, etc.,)
     - *values:* 0 or 1
     - *default:* 1 (print)
 3. n_iters | int
-    - *meaning:* number of training iteration. After this iter, the training process will stop/done.
+    - *meaning:* number of training iteration. After this iter, the training process will stop/done
     - *default:* 500 
 4. n_clasess | int
     - *meaning:* number of classes in the dataset
@@ -29,20 +29,24 @@ There are 11 parameters in total that need to be configured before starting a ru
     - *meaning:* number of mini-batches. Batch will be subdivided into <u>this many</u> smaller batches. If the GPU/RAM strong and has enough memory, we can set this value small _(eg. 1, 2, 4)_
     - *default:*  4
 7. lake_host | str **\<Need to fill this field>**
-    - *meaning:* host (address) of the LakeFS.
+    - *meaning:* host (address) of the LakeFS
     - *default:* ''
 8. lake_user | str **\<Need to fill this field>**
-    - *meaning:* registered account's user on LakeFS system.
+    - *meaning:* registered account's user on LakeFS system
     - *default:* ''
 9. lake_pwd | str **\<Need to fill this field>**
-    - *meaning:* password of registered account on LakeFS system.
+    - *meaning:* password of registered account on LakeFS system
     - *default:* ''
 10. lake_repo | str **\<Need to fill this field>**
     - *meaning:* the repository that store the data
     - *default:* ''
 11. mlflow_server | str **\<Need to fill this field>**
-    - *meaning:* the tracking server of MLFlow. Should be something like this: *http://x.x.x.x:8001*. 
+    - *meaning:* the tracking server of MLFlow. Should be something like this: *http://x.x.x.x:8001*
     - *default:* ''
+12. threshold | float 
+    - *meaning:* model will not return predictions that have confidence scores lower than this threshold
+    - *default:* 0.6 (60%)
+
 ## Usage
 1. Generate the pipeline.yaml
     ```

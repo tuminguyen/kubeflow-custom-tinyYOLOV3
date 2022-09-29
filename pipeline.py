@@ -117,28 +117,17 @@ def train_data(with_gpu:int, print_training:int, n_iters: int, n_classes: int, b
     latest_weight = weight_list[-1]
 
     import mlflow
-    from mlflow import MlflowClient
-    from mlflow.entities import ViewType
-
-    # # set MLFlow tracking uri
+    # set MLFlow tracking uri
     mlflow.set_tracking_uri(mlflow_server)
-    # create experiment
-    mlflow.create_experiment("yolo-VN", tags={"tag":"1"})
-    mlflow.set_experiment("yolo-VN")
     
     mlflow.log_artifact(latest_weight)
-
-    current_experiment=dict(mlflow.get_experiment_by_name("yolo-VN"))
-    experiment_id=current_experiment['experiment_id']
-
-    runs = MlflowClient().search_runs(experiment_ids=experiment_id, filter_string="", run_view_type=ViewType.ALL)
 
     return mlflow.get_artifact_uri()
 
 train_op = comp.func_to_container_op(train_data)
 
 
-def predict_data(with_gpu:int, n_classes: int, mlflow_server:str, uri:str):
+def predict_data(with_gpu:int, n_classes: int, mlflow_server:str, uri:str, threshold:float):
     import subprocess
 
     # install required libs
@@ -190,8 +179,8 @@ def predict_data(with_gpu:int, n_classes: int, mlflow_server:str, uri:str):
     # get a sample of pcb board online
     link = 'https://image.shutterstock.com/image-photo/pcb-board-integrated-circuit-600w-417842593.jpg'
     subprocess.run(['wget', '{}'.format(link)])
-    # ./darknet detector test .data_file cfg weight img
-    subprocess.run(['./darknet', 'detector', 'test', 'pcb.data', 'cfg/my_v3tiny.cfg', 'artifacts/my_v3tiny_final.weights', '{}'.format(link.split("/")[-1])])
+    # ./darknet detector test .data_file cfg weight img -thresh threshold
+    subprocess.run(['./darknet', 'detector', 'test', 'pcb.data', 'cfg/my_v3tiny.cfg', 'artifacts/my_v3tiny_final.weights', '{}'.format(link.split("/")[-1]), '-thresh', '{}'.format(threshold)])
 
 pred_op = comp.func_to_container_op(predict_data)
 
@@ -212,12 +201,13 @@ def kubeflow_yolo_pipeline(
     lake_user:str='', 
     lake_pwd:str='', 
     lake_repo:str='', 
-    mlflow_server:str=''):
+    mlflow_server:str='',
+    threshold:float=0.6):
 
     #Passing pipeline parameter and a constant value as operation arguments
     _train_op = train_op(with_gpu, print_training, n_iters, n_classes, batch_size, subdiv, lake_host, lake_user, lake_pwd, lake_repo, mlflow_server)
     #Returns a dsl.ContainerOp class instance.
-    _pred_op = pred_op(with_gpu, n_classes, mlflow_server,_train_op.output).after(_train_op)
+    _pred_op = pred_op(with_gpu, n_classes, mlflow_server,_train_op.output, threshold).after(_train_op)
 
 if __name__ == '__main__':
     kfp.compiler.Compiler().compile(kubeflow_yolo_pipeline, 'pipeline.yaml')

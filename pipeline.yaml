@@ -1,0 +1,473 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: kubeflow-yolo-demo-
+  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.10, pipelines.kubeflow.org/pipeline_compilation_time: '2022-09-29T04:39:31.374083',
+    pipelines.kubeflow.org/pipeline_spec: '{"description": "Kubeflow pipeline demo
+      with tiny yolov3", "inputs": [{"default": "0", "name": "with_gpu", "optional":
+      true, "type": "Integer"}, {"default": "1", "name": "print_training", "optional":
+      true, "type": "Integer"}, {"default": "500", "name": "n_iters", "optional":
+      true, "type": "Integer"}, {"default": "13", "name": "n_classes", "optional":
+      true, "type": "Integer"}, {"default": "8", "name": "batch_size", "optional":
+      true, "type": "Integer"}, {"default": "4", "name": "subdiv", "optional": true,
+      "type": "Integer"}, {"default": "", "name": "lake_host", "optional": true, "type":
+      "String"}, {"default": "", "name": "lake_user", "optional": true, "type": "String"},
+      {"default": "", "name": "lake_pwd", "optional": true, "type": "String"}, {"default":
+      "", "name": "lake_repo", "optional": true, "type": "String"}, {"default": "",
+      "name": "mlflow_server", "optional": true, "type": "String"}], "name": "Kubeflow
+      yolo demo"}'}
+  labels: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.10}
+spec:
+  entrypoint: kubeflow-yolo-demo
+  templates:
+  - name: kubeflow-yolo-demo
+    inputs:
+      parameters:
+      - {name: batch_size}
+      - {name: lake_host}
+      - {name: lake_pwd}
+      - {name: lake_repo}
+      - {name: lake_user}
+      - {name: mlflow_server}
+      - {name: n_classes}
+      - {name: n_iters}
+      - {name: print_training}
+      - {name: subdiv}
+      - {name: with_gpu}
+    dag:
+      tasks:
+      - name: predict-data
+        template: predict-data
+        dependencies: [train-data]
+        arguments:
+          parameters:
+          - {name: mlflow_server, value: '{{inputs.parameters.mlflow_server}}'}
+          - {name: n_classes, value: '{{inputs.parameters.n_classes}}'}
+          - {name: train-data-Output, value: '{{tasks.train-data.outputs.parameters.train-data-Output}}'}
+          - {name: with_gpu, value: '{{inputs.parameters.with_gpu}}'}
+      - name: train-data
+        template: train-data
+        arguments:
+          parameters:
+          - {name: batch_size, value: '{{inputs.parameters.batch_size}}'}
+          - {name: lake_host, value: '{{inputs.parameters.lake_host}}'}
+          - {name: lake_pwd, value: '{{inputs.parameters.lake_pwd}}'}
+          - {name: lake_repo, value: '{{inputs.parameters.lake_repo}}'}
+          - {name: lake_user, value: '{{inputs.parameters.lake_user}}'}
+          - {name: mlflow_server, value: '{{inputs.parameters.mlflow_server}}'}
+          - {name: n_classes, value: '{{inputs.parameters.n_classes}}'}
+          - {name: n_iters, value: '{{inputs.parameters.n_iters}}'}
+          - {name: print_training, value: '{{inputs.parameters.print_training}}'}
+          - {name: subdiv, value: '{{inputs.parameters.subdiv}}'}
+          - {name: with_gpu, value: '{{inputs.parameters.with_gpu}}'}
+  - name: predict-data
+    container:
+      args: [--with-gpu, '{{inputs.parameters.with_gpu}}', --n-classes, '{{inputs.parameters.n_classes}}',
+        --mlflow-server, '{{inputs.parameters.mlflow_server}}', --uri, '{{inputs.parameters.train-data-Output}}']
+      command:
+      - sh
+      - -ec
+      - |
+        program_path=$(mktemp)
+        printf "%s" "$0" > "$program_path"
+        python3 -u "$program_path" "$@"
+      - |
+        def predict_data(with_gpu, n_classes, mlflow_server, uri):
+            import subprocess
+
+            # install required libs
+            subprocess.run(['pip', 'install', 'gitpython', 'mlflow==1.29.0'])
+
+            # install darknet
+            from git import Repo
+            Repo.clone_from('https://github.com/pjreddie/darknet.git', 'darknet/')
+            import os
+            os.chdir('darknet/')
+            # edit Makefile if train with GPU and enable OPENCV
+            if with_gpu:
+                # sed -i 's/OPENCV=0/OPENCV=1/' Makefile
+                subprocess.run(["sed", "-i", 's/OPENCV=0/OPENCV=1/', "Makefile"])
+                # sed -i 's/GPU=0/GPU=1/' Makefile
+                subprocess.run(["sed", "-i", 's/GPU=0/GPU=1/', "Makefile"])
+                # sed -i 's/CUDNN=0/CUDNN=1/' Makefile
+                subprocess.run(["sed", "-i", 's/CUDNN=0/CUDNN=1/', "Makefile"])
+            subprocess.run(['make'])
+
+            # setup for training process
+            # make a new config file
+            subprocess.run(['cp', 'cfg/yolov3-tiny.cfg', 'cfg/my_v3tiny.cfg'])
+
+            # sed -i '135 s@classes=80@classes={N_CLASSES}@' cfg/my_v3tiny.cfg
+            subprocess.run(["sed", "-i", '135 s@classes=80@classes={}@'.format(n_classes), "cfg/my_v3tiny.cfg"])
+            # sed -i '177 s@classes=80@classes={N_CLASSES}@' cfg/my_v3tiny.cfg
+            subprocess.run(["sed", "-i", '177 s@classes=80@classes={}@'.format(n_classes), "cfg/my_v3tiny.cfg"])
+            # sed -i '127 s@filters=255@filters={(N_CLASSES+5)*3}@' cfg/my_v3tiny.cfg
+            subprocess.run(["sed", "-i", '127 s@filters=255@filters={}@'.format((n_classes+5)*3), "cfg/my_v3tiny.cfg"])
+            # sed -i '171 s@filters=255@filters={(N_CLASSES+5)*3}@' cfg/my_v3tiny.cfg
+            subprocess.run(["sed", "-i", '171 s@filters=255@filters={}@'.format((n_classes+5)*3), "cfg/my_v3tiny.cfg"])
+
+            import mlflow
+            mlflow.set_tracking_uri(mlflow_server)
+
+            mlflow.artifacts.download_artifacts(artifact_uri=uri, dst_path='.')
+
+            # make .data file again
+            with open('pcb.data', 'w') as f:
+                f.write('classes = 13\ntrain = train.txt\nvalid = val.txt\nnames = pcb.names\nbackup = backup/')
+
+            # make .names file again
+            labels = ['Conn_Mod','Connector','IC','Cooler','El_Cap','XTAL_OSC','Jumper','Inductor_BIG','Transformer','Module','IC_DIL','PWR_SEMI','Conn_SubD']
+            with open('pcb.names', 'w') as f:
+                f.write("\n".join(labels))
+
+            # predict
+            # get a sample of pcb board online
+            link = 'https://image.shutterstock.com/image-photo/pcb-board-integrated-circuit-600w-417842593.jpg'
+            subprocess.run(['wget', '{}'.format(link)])
+            # ./darknet detector test .data_file cfg weight img
+            subprocess.run(['./darknet', 'detector', 'test', 'pcb.data', 'cfg/my_v3tiny.cfg', 'artifacts/my_v3tiny_final.weights', '{}'.format(link.split("/")[-1])])
+
+        import argparse
+        _parser = argparse.ArgumentParser(prog='Predict data', description='')
+        _parser.add_argument("--with-gpu", dest="with_gpu", type=int, required=True, default=argparse.SUPPRESS)
+        _parser.add_argument("--n-classes", dest="n_classes", type=int, required=True, default=argparse.SUPPRESS)
+        _parser.add_argument("--mlflow-server", dest="mlflow_server", type=str, required=True, default=argparse.SUPPRESS)
+        _parser.add_argument("--uri", dest="uri", type=str, required=True, default=argparse.SUPPRESS)
+        _parsed_args = vars(_parser.parse_args())
+
+        _outputs = predict_data(**_parsed_args)
+      image: python:3.7
+    inputs:
+      parameters:
+      - {name: mlflow_server}
+      - {name: n_classes}
+      - {name: train-data-Output}
+      - {name: with_gpu}
+    metadata:
+      labels:
+        pipelines.kubeflow.org/kfp_sdk_version: 1.8.10
+        pipelines.kubeflow.org/pipeline-sdk-type: kfp
+        pipelines.kubeflow.org/enable_caching: "true"
+      annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
+          {"args": ["--with-gpu", {"inputValue": "with_gpu"}, "--n-classes", {"inputValue":
+          "n_classes"}, "--mlflow-server", {"inputValue": "mlflow_server"}, "--uri",
+          {"inputValue": "uri"}], "command": ["sh", "-ec", "program_path=$(mktemp)\nprintf
+          \"%s\" \"$0\" > \"$program_path\"\npython3 -u \"$program_path\" \"$@\"\n",
+          "def predict_data(with_gpu, n_classes, mlflow_server, uri):\n    import
+          subprocess\n\n    # install required libs\n    subprocess.run([''pip'',
+          ''install'', ''gitpython'', ''mlflow==1.29.0''])\n\n    # install darknet\n    from
+          git import Repo\n    Repo.clone_from(''https://github.com/pjreddie/darknet.git'',
+          ''darknet/'')\n    import os\n    os.chdir(''darknet/'')\n    # edit Makefile
+          if train with GPU and enable OPENCV\n    if with_gpu:\n        # sed -i
+          ''s/OPENCV=0/OPENCV=1/'' Makefile\n        subprocess.run([\"sed\", \"-i\",
+          ''s/OPENCV=0/OPENCV=1/'', \"Makefile\"])\n        # sed -i ''s/GPU=0/GPU=1/''
+          Makefile\n        subprocess.run([\"sed\", \"-i\", ''s/GPU=0/GPU=1/'', \"Makefile\"])\n        #
+          sed -i ''s/CUDNN=0/CUDNN=1/'' Makefile\n        subprocess.run([\"sed\",
+          \"-i\", ''s/CUDNN=0/CUDNN=1/'', \"Makefile\"])\n    subprocess.run([''make''])\n\n    #
+          setup for training process\n    # make a new config file\n    subprocess.run([''cp'',
+          ''cfg/yolov3-tiny.cfg'', ''cfg/my_v3tiny.cfg''])\n\n    # sed -i ''135 s@classes=80@classes={N_CLASSES}@''
+          cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", ''135 s@classes=80@classes={}@''.format(n_classes),
+          \"cfg/my_v3tiny.cfg\"])\n    # sed -i ''177 s@classes=80@classes={N_CLASSES}@''
+          cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", ''177 s@classes=80@classes={}@''.format(n_classes),
+          \"cfg/my_v3tiny.cfg\"])\n    # sed -i ''127 s@filters=255@filters={(N_CLASSES+5)*3}@''
+          cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", ''127 s@filters=255@filters={}@''.format((n_classes+5)*3),
+          \"cfg/my_v3tiny.cfg\"])\n    # sed -i ''171 s@filters=255@filters={(N_CLASSES+5)*3}@''
+          cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", ''171 s@filters=255@filters={}@''.format((n_classes+5)*3),
+          \"cfg/my_v3tiny.cfg\"])\n\n    import mlflow\n    mlflow.set_tracking_uri(mlflow_server)\n\n    mlflow.artifacts.download_artifacts(artifact_uri=uri,
+          dst_path=''.'')\n\n    # make .data file again\n    with open(''pcb.data'',
+          ''w'') as f:\n        f.write(''classes = 13\\ntrain = train.txt\\nvalid
+          = val.txt\\nnames = pcb.names\\nbackup = backup/'')\n\n    # make .names
+          file again\n    labels = [''Conn_Mod'',''Connector'',''IC'',''Cooler'',''El_Cap'',''XTAL_OSC'',''Jumper'',''Inductor_BIG'',''Transformer'',''Module'',''IC_DIL'',''PWR_SEMI'',''Conn_SubD'']\n    with
+          open(''pcb.names'', ''w'') as f:\n        f.write(\"\\n\".join(labels))\n\n    #
+          predict\n    # get a sample of pcb board online\n    link = ''https://image.shutterstock.com/image-photo/pcb-board-integrated-circuit-600w-417842593.jpg''\n    subprocess.run([''wget'',
+          ''{}''.format(link)])\n    # ./darknet detector test .data_file cfg weight
+          img\n    subprocess.run([''./darknet'', ''detector'', ''test'', ''pcb.data'',
+          ''cfg/my_v3tiny.cfg'', ''artifacts/my_v3tiny_final.weights'', ''{}''.format(link.split(\"/\")[-1])])\n\nimport
+          argparse\n_parser = argparse.ArgumentParser(prog=''Predict data'', description='''')\n_parser.add_argument(\"--with-gpu\",
+          dest=\"with_gpu\", type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--n-classes\",
+          dest=\"n_classes\", type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--mlflow-server\",
+          dest=\"mlflow_server\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--uri\",
+          dest=\"uri\", type=str, required=True, default=argparse.SUPPRESS)\n_parsed_args
+          = vars(_parser.parse_args())\n\n_outputs = predict_data(**_parsed_args)\n"],
+          "image": "python:3.7"}}, "inputs": [{"name": "with_gpu", "type": "Integer"},
+          {"name": "n_classes", "type": "Integer"}, {"name": "mlflow_server", "type":
+          "String"}, {"name": "uri", "type": "String"}], "name": "Predict data"}',
+        pipelines.kubeflow.org/component_ref: '{}', pipelines.kubeflow.org/arguments.parameters: '{"mlflow_server":
+          "{{inputs.parameters.mlflow_server}}", "n_classes": "{{inputs.parameters.n_classes}}",
+          "uri": "{{inputs.parameters.train-data-Output}}", "with_gpu": "{{inputs.parameters.with_gpu}}"}'}
+  - name: train-data
+    container:
+      args: [--with-gpu, '{{inputs.parameters.with_gpu}}', --print-training, '{{inputs.parameters.print_training}}',
+        --n-iters, '{{inputs.parameters.n_iters}}', --n-classes, '{{inputs.parameters.n_classes}}',
+        --batch-size, '{{inputs.parameters.batch_size}}', --subdiv, '{{inputs.parameters.subdiv}}',
+        --lake-host, '{{inputs.parameters.lake_host}}', --lake-user, '{{inputs.parameters.lake_user}}',
+        --lake-pwd, '{{inputs.parameters.lake_pwd}}', --lake-repo, '{{inputs.parameters.lake_repo}}',
+        --mlflow-server, '{{inputs.parameters.mlflow_server}}', '----output-paths',
+        /tmp/outputs/Output/data]
+      command:
+      - sh
+      - -ec
+      - |
+        program_path=$(mktemp)
+        printf "%s" "$0" > "$program_path"
+        python3 -u "$program_path" "$@"
+      - "def train_data(with_gpu, print_training, n_iters, n_classes, batch_size,\
+        \ subdiv, lake_host, lake_user, lake_pwd, lake_repo, mlflow_server):\n   \
+        \ import subprocess\n    # install required libs\n    subprocess.run(['pip',\
+        \ 'install', 'wget', 'gitpython', 'lakefs-client', 'mlflow==1.29.0'])\n\n\
+        \    import lakefs_client\n    from lakefs_client.client import LakeFSClient\n\
+        \    from lakefs_client.api import objects_api\n\n    # sub-functions\n  \
+        \  def download_from_lake(host, user, pwd, repo):\n        configuration =\
+        \ lakefs_client.Configuration()\n        configuration.username = user\n \
+        \       configuration.password = pwd\n        configuration.host = host\n\n\
+        \        client = LakeFSClient(configuration)\n        # Get branch names\
+        \ or commit ids\n        branch_and_commits = client.branches.list_branches(repo)['results']\n\
+        \        ref = \"main\" # string | branch name (id) OR a commit id (commit_id)\
+        \ in 'branch_and_commits' returned list\n\n        with client.objects.api_client\
+        \ as api_client:\n            api_instance = objects_api.ObjectsApi(api_client)\n\
+        \n            # Get list of objects and names\n            api_response =\
+        \ api_instance.list_objects(repo, ref)['results']\n            path = \"dataset.zip\"\
+        \ # string | \"path\" value in returned api_response \n\n            # Download\
+        \ the object/data. It will go directly to /tmp folder\n            try:\n\
+        \                api_response = api_instance.get_object(repo, ref, path)\n\
+        \            except lakefs_client.ApiException as e:\n                print(str(e))\n\
+        \n    # install darknet\n    from git import Repo\n    Repo.clone_from('https://github.com/pjreddie/darknet.git',\
+        \ 'darknet/')\n    import os\n    os.chdir('darknet/')\n    # edit saving\
+        \ after per 1000 iters in detector.c\n    # sed -i '138 s@i%10000==0@i%1000==0@'\
+        \ examples/detector.c\n    subprocess.run([\"sed\", \"-i\", '138 s@i%10000==0@i%1000==0@',\
+        \ \"examples/detector.c\"])\n    # edit Makefile if train with GPU and enable\
+        \ OPENCV\n    if with_gpu:\n        # sed -i 's/OPENCV=0/OPENCV=1/' Makefile\n\
+        \        subprocess.run([\"sed\", \"-i\", 's/OPENCV=0/OPENCV=1/', \"Makefile\"\
+        ])\n        # sed -i 's/GPU=0/GPU=1/' Makefile\n        subprocess.run([\"\
+        sed\", \"-i\", 's/GPU=0/GPU=1/', \"Makefile\"])\n        # sed -i 's/CUDNN=0/CUDNN=1/'\
+        \ Makefile\n        subprocess.run([\"sed\", \"-i\", 's/CUDNN=0/CUDNN=1/',\
+        \ \"Makefile\"])\n    subprocess.run(['make'])\n\n    # download data\n  \
+        \  download_from_lake(lake_host, lake_user, lake_pwd, lake_repo)\n\n    #\
+        \ extract zip data to folder\n    import shutil\n    shutil.unpack_archive('/tmp/dataset.zip',\
+        \ 'data/obj/')\n\n    # setup for training process\n    # make a new model\
+        \ config file\n    subprocess.run(['cp', 'cfg/yolov3-tiny.cfg', 'cfg/my_v3tiny.cfg'])\n\
+        \    # sed -i 's/batch=1/batch={BATCH_SIZE}/' cfg/my_v3tiny.cfg\n    subprocess.run([\"\
+        sed\", \"-i\", 's/batch=1/batch={}/'.format(batch_size), \"cfg/my_v3tiny.cfg\"\
+        ])\n    # sed -i 's/subdivisions=1/subdivisions={SUB_DIVISION}/' cfg/my_v3tiny.cfg\n\
+        \    subprocess.run([\"sed\", \"-i\", 's/subdivisions=1/subdivisions={}/'.format(subdiv),\
+        \ \"cfg/my_v3tiny.cfg\"])\n    # sed -i 's/max_batches = 500200/max_batches\
+        \ = {N_ITERS}/' cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", 's/max_batches\
+        \ = 500200/max_batches = {}/'.format(n_iters), \"cfg/my_v3tiny.cfg\"])\n \
+        \   # sed -i 's/steps=20800,23400/steps={0.8*N_ITERS},{0.9*N_ITERS}/' cfg/my_v3tiny.cfg\n\
+        \    subprocess.run([\"sed\", \"-i\", 's/steps=20800,23400/steps={},{}/'.format(int(0.8*n_iters),\
+        \ int(0.9*n_iters)), \"cfg/my_v3tiny.cfg\"])\n    # sed -i '135 s@classes=80@classes={N_CLASSES}@'\
+        \ cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", '135 s@classes=80@classes={}@'.format(n_classes),\
+        \ \"cfg/my_v3tiny.cfg\"])\n    # sed -i '177 s@classes=80@classes={N_CLASSES}@'\
+        \ cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", '177 s@classes=80@classes={}@'.format(n_classes),\
+        \ \"cfg/my_v3tiny.cfg\"])\n    # sed -i '127 s@filters=255@filters={(N_CLASSES+5)*3}@'\
+        \ cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", '127 s@filters=255@filters={}@'.format((n_classes+5)*3),\
+        \ \"cfg/my_v3tiny.cfg\"])\n    # sed -i '171 s@filters=255@filters={(N_CLASSES+5)*3}@'\
+        \ cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", '171 s@filters=255@filters={}@'.format((n_classes+5)*3),\
+        \ \"cfg/my_v3tiny.cfg\"])\n\n    # download darknet pre-trained weight\n \
+        \   subprocess.run(['wget', 'https://pjreddie.com/media/files/darknet53.conv.74'])\n\
+        \n    # make .names file\n    labels = ['Conn_Mod','Connector','IC','Cooler','El_Cap','XTAL_OSC','Jumper','Inductor_BIG','Transformer','Module','IC_DIL','PWR_SEMI','Conn_SubD']\n\
+        \    with open('pcb.names', 'w') as f:\n        f.write(\"\\n\".join(labels))\n\
+        \    # make .data file\n    with open('pcb.data', 'w') as f:\n        f.write('classes\
+        \ = 13\\ntrain = train.txt\\nvalid = val.txt\\nnames = pcb.names\\nbackup\
+        \ = backup/')\n\n    import glob\n    # make a train.txt file\n    train_files\
+        \ = \"\\n\".join(glob.glob('data/obj/training/*.jpg'))\n    with open('train.txt',\
+        \ 'w') as f:\n        f.write(train_files)\n    # make a val.txt file\n  \
+        \  val_files = \"\\n\".join(glob.glob('data/obj/validation/*.jpg'))\n    with\
+        \ open('val.txt', 'w') as f:\n        f.write(val_files)\n\n    # train (should\
+        \ have ~500 - 2000 images per class + train 2000 iterations per class)\n \
+        \   if print_training:\n        # ./darknet detector train .data_file cfg\
+        \ darknet53.conv.74\n        subprocess.run(['./darknet', 'detector', 'train',\
+        \ 'pcb.data', 'cfg/my_v3tiny.cfg', 'darknet53.conv.74'])\n    else:\n    \
+        \    # ./darknet detector train data_file cfg darknet53.conv.74 &> /dev/null\n\
+        \        subprocess.run(['./darknet', 'detector', 'train', 'pcb.data', 'cfg/my_v3tiny.cfg',\
+        \ 'darknet53.conv.74', '&>' , '/dev/null'])\n\n    # get the latest weights\n\
+        \    weight_list = glob.glob('backup/*.weights')\n    weight_list.sort(key=lambda\
+        \ x:os.path.getmtime(x))\n    latest_weight = weight_list[-1]\n\n    import\
+        \ mlflow\n    from mlflow import MlflowClient\n    from mlflow.entities import\
+        \ ViewType\n\n    # # set MLFlow tracking uri\n    mlflow.set_tracking_uri(mlflow_server)\n\
+        \    # create experiment\n    mlflow.create_experiment(\"yolo-VN\", tags={\"\
+        tag\":\"1\"})\n    mlflow.set_experiment(\"yolo-VN\")\n\n    mlflow.log_artifact(latest_weight)\n\
+        \n    current_experiment=dict(mlflow.get_experiment_by_name(\"yolo-VN\"))\n\
+        \    experiment_id=current_experiment['experiment_id']\n\n    runs = MlflowClient().search_runs(experiment_ids=experiment_id,\
+        \ filter_string=\"\", run_view_type=ViewType.ALL)\n\n    return mlflow.get_artifact_uri()\n\
+        \ndef _serialize_str(str_value: str) -> str:\n    if not isinstance(str_value,\
+        \ str):\n        raise TypeError('Value \"{}\" has type \"{}\" instead of\
+        \ str.'.format(\n            str(str_value), str(type(str_value))))\n    return\
+        \ str_value\n\nimport argparse\n_parser = argparse.ArgumentParser(prog='Train\
+        \ data', description='')\n_parser.add_argument(\"--with-gpu\", dest=\"with_gpu\"\
+        , type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"\
+        --print-training\", dest=\"print_training\", type=int, required=True, default=argparse.SUPPRESS)\n\
+        _parser.add_argument(\"--n-iters\", dest=\"n_iters\", type=int, required=True,\
+        \ default=argparse.SUPPRESS)\n_parser.add_argument(\"--n-classes\", dest=\"\
+        n_classes\", type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"\
+        --batch-size\", dest=\"batch_size\", type=int, required=True, default=argparse.SUPPRESS)\n\
+        _parser.add_argument(\"--subdiv\", dest=\"subdiv\", type=int, required=True,\
+        \ default=argparse.SUPPRESS)\n_parser.add_argument(\"--lake-host\", dest=\"\
+        lake_host\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"\
+        --lake-user\", dest=\"lake_user\", type=str, required=True, default=argparse.SUPPRESS)\n\
+        _parser.add_argument(\"--lake-pwd\", dest=\"lake_pwd\", type=str, required=True,\
+        \ default=argparse.SUPPRESS)\n_parser.add_argument(\"--lake-repo\", dest=\"\
+        lake_repo\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"\
+        --mlflow-server\", dest=\"mlflow_server\", type=str, required=True, default=argparse.SUPPRESS)\n\
+        _parser.add_argument(\"----output-paths\", dest=\"_output_paths\", type=str,\
+        \ nargs=1)\n_parsed_args = vars(_parser.parse_args())\n_output_files = _parsed_args.pop(\"\
+        _output_paths\", [])\n\n_outputs = train_data(**_parsed_args)\n\n_outputs\
+        \ = [_outputs]\n\n_output_serializers = [\n    _serialize_str,\n\n]\n\nimport\
+        \ os\nfor idx, output_file in enumerate(_output_files):\n    try:\n      \
+        \  os.makedirs(os.path.dirname(output_file))\n    except OSError:\n      \
+        \  pass\n    with open(output_file, 'w') as f:\n        f.write(_output_serializers[idx](_outputs[idx]))\n"
+      image: python:3.7
+    inputs:
+      parameters:
+      - {name: batch_size}
+      - {name: lake_host}
+      - {name: lake_pwd}
+      - {name: lake_repo}
+      - {name: lake_user}
+      - {name: mlflow_server}
+      - {name: n_classes}
+      - {name: n_iters}
+      - {name: print_training}
+      - {name: subdiv}
+      - {name: with_gpu}
+    outputs:
+      parameters:
+      - name: train-data-Output
+        valueFrom: {path: /tmp/outputs/Output/data}
+      artifacts:
+      - {name: train-data-Output, path: /tmp/outputs/Output/data}
+    metadata:
+      labels:
+        pipelines.kubeflow.org/kfp_sdk_version: 1.8.10
+        pipelines.kubeflow.org/pipeline-sdk-type: kfp
+        pipelines.kubeflow.org/enable_caching: "true"
+      annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
+          {"args": ["--with-gpu", {"inputValue": "with_gpu"}, "--print-training",
+          {"inputValue": "print_training"}, "--n-iters", {"inputValue": "n_iters"},
+          "--n-classes", {"inputValue": "n_classes"}, "--batch-size", {"inputValue":
+          "batch_size"}, "--subdiv", {"inputValue": "subdiv"}, "--lake-host", {"inputValue":
+          "lake_host"}, "--lake-user", {"inputValue": "lake_user"}, "--lake-pwd",
+          {"inputValue": "lake_pwd"}, "--lake-repo", {"inputValue": "lake_repo"},
+          "--mlflow-server", {"inputValue": "mlflow_server"}, "----output-paths",
+          {"outputPath": "Output"}], "command": ["sh", "-ec", "program_path=$(mktemp)\nprintf
+          \"%s\" \"$0\" > \"$program_path\"\npython3 -u \"$program_path\" \"$@\"\n",
+          "def train_data(with_gpu, print_training, n_iters, n_classes, batch_size,
+          subdiv, lake_host, lake_user, lake_pwd, lake_repo, mlflow_server):\n    import
+          subprocess\n    # install required libs\n    subprocess.run([''pip'', ''install'',
+          ''wget'', ''gitpython'', ''lakefs-client'', ''mlflow==1.29.0''])\n\n    import
+          lakefs_client\n    from lakefs_client.client import LakeFSClient\n    from
+          lakefs_client.api import objects_api\n\n    # sub-functions\n    def download_from_lake(host,
+          user, pwd, repo):\n        configuration = lakefs_client.Configuration()\n        configuration.username
+          = user\n        configuration.password = pwd\n        configuration.host
+          = host\n\n        client = LakeFSClient(configuration)\n        # Get branch
+          names or commit ids\n        branch_and_commits = client.branches.list_branches(repo)[''results'']\n        ref
+          = \"main\" # string | branch name (id) OR a commit id (commit_id) in ''branch_and_commits''
+          returned list\n\n        with client.objects.api_client as api_client:\n            api_instance
+          = objects_api.ObjectsApi(api_client)\n\n            # Get list of objects
+          and names\n            api_response = api_instance.list_objects(repo, ref)[''results'']\n            path
+          = \"dataset.zip\" # string | \"path\" value in returned api_response \n\n            #
+          Download the object/data. It will go directly to /tmp folder\n            try:\n                api_response
+          = api_instance.get_object(repo, ref, path)\n            except lakefs_client.ApiException
+          as e:\n                print(str(e))\n\n    # install darknet\n    from
+          git import Repo\n    Repo.clone_from(''https://github.com/pjreddie/darknet.git'',
+          ''darknet/'')\n    import os\n    os.chdir(''darknet/'')\n    # edit saving
+          after per 1000 iters in detector.c\n    # sed -i ''138 s@i%10000==0@i%1000==0@''
+          examples/detector.c\n    subprocess.run([\"sed\", \"-i\", ''138 s@i%10000==0@i%1000==0@'',
+          \"examples/detector.c\"])\n    # edit Makefile if train with GPU and enable
+          OPENCV\n    if with_gpu:\n        # sed -i ''s/OPENCV=0/OPENCV=1/'' Makefile\n        subprocess.run([\"sed\",
+          \"-i\", ''s/OPENCV=0/OPENCV=1/'', \"Makefile\"])\n        # sed -i ''s/GPU=0/GPU=1/''
+          Makefile\n        subprocess.run([\"sed\", \"-i\", ''s/GPU=0/GPU=1/'', \"Makefile\"])\n        #
+          sed -i ''s/CUDNN=0/CUDNN=1/'' Makefile\n        subprocess.run([\"sed\",
+          \"-i\", ''s/CUDNN=0/CUDNN=1/'', \"Makefile\"])\n    subprocess.run([''make''])\n\n    #
+          download data\n    download_from_lake(lake_host, lake_user, lake_pwd, lake_repo)\n\n    #
+          extract zip data to folder\n    import shutil\n    shutil.unpack_archive(''/tmp/dataset.zip'',
+          ''data/obj/'')\n\n    # setup for training process\n    # make a new model
+          config file\n    subprocess.run([''cp'', ''cfg/yolov3-tiny.cfg'', ''cfg/my_v3tiny.cfg''])\n    #
+          sed -i ''s/batch=1/batch={BATCH_SIZE}/'' cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\",
+          \"-i\", ''s/batch=1/batch={}/''.format(batch_size), \"cfg/my_v3tiny.cfg\"])\n    #
+          sed -i ''s/subdivisions=1/subdivisions={SUB_DIVISION}/'' cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\",
+          \"-i\", ''s/subdivisions=1/subdivisions={}/''.format(subdiv), \"cfg/my_v3tiny.cfg\"])\n    #
+          sed -i ''s/max_batches = 500200/max_batches = {N_ITERS}/'' cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\",
+          \"-i\", ''s/max_batches = 500200/max_batches = {}/''.format(n_iters), \"cfg/my_v3tiny.cfg\"])\n    #
+          sed -i ''s/steps=20800,23400/steps={0.8*N_ITERS},{0.9*N_ITERS}/'' cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\",
+          \"-i\", ''s/steps=20800,23400/steps={},{}/''.format(int(0.8*n_iters), int(0.9*n_iters)),
+          \"cfg/my_v3tiny.cfg\"])\n    # sed -i ''135 s@classes=80@classes={N_CLASSES}@''
+          cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", ''135 s@classes=80@classes={}@''.format(n_classes),
+          \"cfg/my_v3tiny.cfg\"])\n    # sed -i ''177 s@classes=80@classes={N_CLASSES}@''
+          cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", ''177 s@classes=80@classes={}@''.format(n_classes),
+          \"cfg/my_v3tiny.cfg\"])\n    # sed -i ''127 s@filters=255@filters={(N_CLASSES+5)*3}@''
+          cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", ''127 s@filters=255@filters={}@''.format((n_classes+5)*3),
+          \"cfg/my_v3tiny.cfg\"])\n    # sed -i ''171 s@filters=255@filters={(N_CLASSES+5)*3}@''
+          cfg/my_v3tiny.cfg\n    subprocess.run([\"sed\", \"-i\", ''171 s@filters=255@filters={}@''.format((n_classes+5)*3),
+          \"cfg/my_v3tiny.cfg\"])\n\n    # download darknet pre-trained weight\n    subprocess.run([''wget'',
+          ''https://pjreddie.com/media/files/darknet53.conv.74''])\n\n    # make .names
+          file\n    labels = [''Conn_Mod'',''Connector'',''IC'',''Cooler'',''El_Cap'',''XTAL_OSC'',''Jumper'',''Inductor_BIG'',''Transformer'',''Module'',''IC_DIL'',''PWR_SEMI'',''Conn_SubD'']\n    with
+          open(''pcb.names'', ''w'') as f:\n        f.write(\"\\n\".join(labels))\n    #
+          make .data file\n    with open(''pcb.data'', ''w'') as f:\n        f.write(''classes
+          = 13\\ntrain = train.txt\\nvalid = val.txt\\nnames = pcb.names\\nbackup
+          = backup/'')\n\n    import glob\n    # make a train.txt file\n    train_files
+          = \"\\n\".join(glob.glob(''data/obj/training/*.jpg''))\n    with open(''train.txt'',
+          ''w'') as f:\n        f.write(train_files)\n    # make a val.txt file\n    val_files
+          = \"\\n\".join(glob.glob(''data/obj/validation/*.jpg''))\n    with open(''val.txt'',
+          ''w'') as f:\n        f.write(val_files)\n\n    # train (should have ~500
+          - 2000 images per class + train 2000 iterations per class)\n    if print_training:\n        #
+          ./darknet detector train .data_file cfg darknet53.conv.74\n        subprocess.run([''./darknet'',
+          ''detector'', ''train'', ''pcb.data'', ''cfg/my_v3tiny.cfg'', ''darknet53.conv.74''])\n    else:\n        #
+          ./darknet detector train data_file cfg darknet53.conv.74 &> /dev/null\n        subprocess.run([''./darknet'',
+          ''detector'', ''train'', ''pcb.data'', ''cfg/my_v3tiny.cfg'', ''darknet53.conv.74'',
+          ''&>'' , ''/dev/null''])\n\n    # get the latest weights\n    weight_list
+          = glob.glob(''backup/*.weights'')\n    weight_list.sort(key=lambda x:os.path.getmtime(x))\n    latest_weight
+          = weight_list[-1]\n\n    import mlflow\n    from mlflow import MlflowClient\n    from
+          mlflow.entities import ViewType\n\n    # # set MLFlow tracking uri\n    mlflow.set_tracking_uri(mlflow_server)\n    #
+          create experiment\n    mlflow.create_experiment(\"yolo-VN\", tags={\"tag\":\"1\"})\n    mlflow.set_experiment(\"yolo-VN\")\n\n    mlflow.log_artifact(latest_weight)\n\n    current_experiment=dict(mlflow.get_experiment_by_name(\"yolo-VN\"))\n    experiment_id=current_experiment[''experiment_id'']\n\n    runs
+          = MlflowClient().search_runs(experiment_ids=experiment_id, filter_string=\"\",
+          run_view_type=ViewType.ALL)\n\n    return mlflow.get_artifact_uri()\n\ndef
+          _serialize_str(str_value: str) -> str:\n    if not isinstance(str_value,
+          str):\n        raise TypeError(''Value \"{}\" has type \"{}\" instead of
+          str.''.format(\n            str(str_value), str(type(str_value))))\n    return
+          str_value\n\nimport argparse\n_parser = argparse.ArgumentParser(prog=''Train
+          data'', description='''')\n_parser.add_argument(\"--with-gpu\", dest=\"with_gpu\",
+          type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--print-training\",
+          dest=\"print_training\", type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--n-iters\",
+          dest=\"n_iters\", type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--n-classes\",
+          dest=\"n_classes\", type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--batch-size\",
+          dest=\"batch_size\", type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--subdiv\",
+          dest=\"subdiv\", type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--lake-host\",
+          dest=\"lake_host\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--lake-user\",
+          dest=\"lake_user\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--lake-pwd\",
+          dest=\"lake_pwd\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--lake-repo\",
+          dest=\"lake_repo\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--mlflow-server\",
+          dest=\"mlflow_server\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"----output-paths\",
+          dest=\"_output_paths\", type=str, nargs=1)\n_parsed_args = vars(_parser.parse_args())\n_output_files
+          = _parsed_args.pop(\"_output_paths\", [])\n\n_outputs = train_data(**_parsed_args)\n\n_outputs
+          = [_outputs]\n\n_output_serializers = [\n    _serialize_str,\n\n]\n\nimport
+          os\nfor idx, output_file in enumerate(_output_files):\n    try:\n        os.makedirs(os.path.dirname(output_file))\n    except
+          OSError:\n        pass\n    with open(output_file, ''w'') as f:\n        f.write(_output_serializers[idx](_outputs[idx]))\n"],
+          "image": "python:3.7"}}, "inputs": [{"name": "with_gpu", "type": "Integer"},
+          {"name": "print_training", "type": "Integer"}, {"name": "n_iters", "type":
+          "Integer"}, {"name": "n_classes", "type": "Integer"}, {"name": "batch_size",
+          "type": "Integer"}, {"name": "subdiv", "type": "Integer"}, {"name": "lake_host",
+          "type": "String"}, {"name": "lake_user", "type": "String"}, {"name": "lake_pwd",
+          "type": "String"}, {"name": "lake_repo", "type": "String"}, {"name": "mlflow_server",
+          "type": "String"}], "name": "Train data", "outputs": [{"name": "Output",
+          "type": "String"}]}', pipelines.kubeflow.org/component_ref: '{}', pipelines.kubeflow.org/arguments.parameters: '{"batch_size":
+          "{{inputs.parameters.batch_size}}", "lake_host": "{{inputs.parameters.lake_host}}",
+          "lake_pwd": "{{inputs.parameters.lake_pwd}}", "lake_repo": "{{inputs.parameters.lake_repo}}",
+          "lake_user": "{{inputs.parameters.lake_user}}", "mlflow_server": "{{inputs.parameters.mlflow_server}}",
+          "n_classes": "{{inputs.parameters.n_classes}}", "n_iters": "{{inputs.parameters.n_iters}}",
+          "print_training": "{{inputs.parameters.print_training}}", "subdiv": "{{inputs.parameters.subdiv}}",
+          "with_gpu": "{{inputs.parameters.with_gpu}}"}'}
+  arguments:
+    parameters:
+    - {name: with_gpu, value: '0'}
+    - {name: print_training, value: '1'}
+    - {name: n_iters, value: '500'}
+    - {name: n_classes, value: '13'}
+    - {name: batch_size, value: '8'}
+    - {name: subdiv, value: '4'}
+    - {name: lake_host, value: ''}
+    - {name: lake_user, value: ''}
+    - {name: lake_pwd, value: ''}
+    - {name: lake_repo, value: ''}
+    - {name: mlflow_server, value: ''}
+  serviceAccountName: pipeline-runner
